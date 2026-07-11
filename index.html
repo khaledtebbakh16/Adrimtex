@@ -300,13 +300,13 @@ const firebaseConfig = {
   measurementId: "G-9S5JV56H6D"
 };
 
-if (!window.firebase.apps.length) {
+if (typeof window.firebase !== 'undefined' && !window.firebase.apps.length) {
   window.firebase.initializeApp(firebaseConfig);
 }
-const db = window.firebase.database();
+const db = window.firebase ? window.firebase.database() : null;
 const { useState, useEffect, useRef, useCallback, useMemo, createContext, useContext } = React;
 
-/* ═══════════════ ICONS (Lucide-style SVGs) ═══════════════ */
+/* ═══════════════ ICONS ═══════════════ */
 const Icon = ({ name, size = 20, className = '', strokeWidth = 2 }) => {
   const icons = {
     shoppingCart: <><circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/></>,
@@ -393,7 +393,6 @@ const ORDER_STATUSES = [
 
 const DEFAULT_PIN = '1234';
 const STORAGE_PREFIX = 'adrimtex_v1_';
-const MAX_RETRIES = 3;
 
 const DEFAULT_HERO = {
   title: 'Adrimtex',
@@ -449,16 +448,50 @@ const DEFAULT_PRODUCTS = {
     { id:'p9', name:'خيوط خياطة ملونة (طقم 50)', price:1500, description:'طقم خيوط خياطة بـ 50 لون مختلف. خيوط بوليستر متينة لا تنقطع بسهولة. مثالية لجميع مشاريع الخياطة.', images:[], mainImage:0, stock:30, bestSeller:true, categoryId:'cat_fabrics' },
   ]
 };
-/* ═══════════════ STORAGE ENGINE (مُصحح) ═══════════════ */
+
+/* ═══════════════ STORAGE ENGINE ═══════════════ */
 const Storage = {
   _key(k) { return STORAGE_PREFIX + k; },
-  
-  // ... (احتفظ بالدوال الأصلية get, set, remove هنا) ...
+
+  get(key, fallback = null) {
+    try {
+      const raw = localStorage.getItem(this._key(key));
+      if (raw === null || raw === undefined) return fallback;
+      return JSON.parse(raw);
+    } catch (e) {
+      console.error('Storage get error:', key, e);
+      return fallback;
+    }
+  },
+
+  async set(key, value) {
+    try {
+      localStorage.setItem(this._key(key), JSON.stringify(value));
+      if (db) {
+        await db.ref(key).set(value);
+      }
+      return { success: true };
+    } catch (e) {
+      console.error('Storage set error:', key, e);
+      return { success: false, error: 'failed', message: e.message };
+    }
+  },
+
+  remove(key) {
+    try {
+      localStorage.removeItem(this._key(key));
+      if (db) {
+        db.ref(key).remove();
+      }
+    } catch(e) { console.error('Storage remove error:', key, e); }
+  },
 
   async saveProducts(categoryId, products) {
     try {
       localStorage.setItem(this._key('products_' + categoryId), JSON.stringify(products));
-      await db.ref(`products/${categoryId}`).set(products);
+      if (db) {
+        await db.ref(`products/${categoryId}`).set(products);
+      }
       return { success: true };
     } catch (e) {
       return { success: false, error: 'failed', message: e.message };
@@ -467,6 +500,16 @@ const Storage = {
 
   getProducts(categoryId) {
     return this.get('products_' + categoryId, []);
+  },
+
+  getAllProducts(categories) {
+    let all = [];
+    if (!categories) return all;
+    for (const cat of categories) {
+      const prods = this.getProducts(cat.id);
+      all = all.concat(prods);
+    }
+    return all;
   },
 
   async init() {
@@ -478,9 +521,12 @@ const Storage = {
         await this.saveProducts(cat.id, prods);
       }
     }
-    // ... إكمال الإعدادات الأخرى
+    if (!this.get('settings')) await this.set('settings', DEFAULT_SETTINGS);
+    if (!this.get('hero')) await this.set('hero', DEFAULT_HERO);
+    if (!this.get('orders')) await this.set('orders', []);
   }
 };
+
 /* ═══════════════ IMAGE COMPRESSION ═══════════════ */
 function compressImage(file, maxWidth = 800, quality = 0.7) {
   return new Promise((resolve, reject) => {
@@ -499,7 +545,8 @@ function compressImage(file, maxWidth = 800, quality = 0.7) {
         ctx.fillRect(0, 0, w, h);
         ctx.drawImage(img, 0, 0, w, h);
         const dataUrl = canvas.toDataURL('image/jpeg', quality);
-        // Further reduce if still too large (>400KB)
+        canvas.width = 0;
+        canvas.height = 0;
         if (dataUrl.length > 400000 && quality > 0.4) {
           const lower = canvas.toDataURL('image/jpeg', 0.4);
           resolve(lower);
@@ -627,13 +674,11 @@ function ProductCard({ product, onOpen, onAddCart, whatsappNumber }) {
 
   return (
     <div className="receipt-card rounded-xl cursor-pointer group" onClick={() => onOpen(product)}>
-      {/* Header barcode-like */}
       <div className="px-3 pt-3 pb-1 flex items-center justify-between">
         <span className="font-mono text-[10px] text-gray-500 tracking-widest">ADX-{product.id.slice(-6).toUpperCase()}</span>
         {product.bestSeller && <span className="badge-orange px-2 py-0.5 rounded-full">الأكثر مبيعاً</span>}
       </div>
 
-      {/* Image */}
       <div className="relative mx-3 mt-1 rounded-lg overflow-hidden aspect-square bg-ink-soft">
         <LazyImage src={img} alt={product.name} className="w-full h-full object-cover" />
         {outOfStock && (
@@ -650,7 +695,6 @@ function ProductCard({ product, onOpen, onAddCart, whatsappNumber }) {
 
       <div className="receipt-perforation my-2"></div>
 
-      {/* Info */}
       <div className="px-3 pb-3">
         <h3 className="font-cairo font-bold text-sm leading-tight mb-1 line-clamp-2 min-h-[2.5em]">{product.name}</h3>
         <div className="flex items-baseline gap-1 mb-2">
@@ -689,7 +733,6 @@ function ProductDetail({ product, onClose, onAddCart, whatsappNumber }) {
   return (
     <Modal open={true} onClose={onClose} title="تفاصيل المنتج">
       <div className="p-5">
-        {/* Gallery */}
         <div className="mb-4">
           <div className="rounded-xl overflow-hidden aspect-square bg-ink-soft mb-3">
             <img src={images[activeImg] || PLACEHOLDER_IMG} alt={product.name} className="w-full h-full object-cover" />
@@ -705,7 +748,6 @@ function ProductDetail({ product, onClose, onAddCart, whatsappNumber }) {
           )}
         </div>
 
-        {/* Info */}
         <div className="flex items-start justify-between gap-3 mb-3">
           <h2 className="font-cairo text-xl font-bold leading-tight">{product.name}</h2>
           {product.bestSeller && <span className="badge-orange px-2 py-1 rounded-full shrink-0">الأكثر مبيعاً</span>}
@@ -716,7 +758,6 @@ function ProductDetail({ product, onClose, onAddCart, whatsappNumber }) {
           <span className="text-gray-400">دينار جزائري</span>
         </div>
 
-        {/* Stock */}
         <div className="mb-4">
           {outOfStock ? (
             <span className="stock-out font-semibold flex items-center gap-1"><Icon name="alertCircle" size={16} /> نفدت الكمية</span>
@@ -872,7 +913,6 @@ function CheckoutModal({ open, onClose, cart, setCart, settings, onOrderComplete
     orders.unshift(order);
     const result = await Storage.set('orders', orders);
 
-    // Decrease stock
     if (result.success) {
       const cats = Storage.get('categories', []);
       for (const item of cart) {
@@ -888,7 +928,7 @@ function CheckoutModal({ open, onClose, cart, setCart, settings, onOrderComplete
       }
       setTrackingId(tid);
       setCart([]);
-      onOrderComplete && onOrderComplete();
+      if (onOrderComplete) onOrderComplete();
       toast('تم تأكيد طلبك بنجاح!', 'success');
     } else {
       toast(result.message || 'فشل حفظ الطلب', 'error');
@@ -921,7 +961,6 @@ function CheckoutModal({ open, onClose, cart, setCart, settings, onOrderComplete
   return (
     <Modal open={open} onClose={onClose} title="إتمام الطلب">
       <div className="p-5">
-        {/* Steps indicator */}
         <div className="flex items-center justify-between mb-6 px-2">
           {steps.map((s, i) => (
             <React.Fragment key={i}>
@@ -936,7 +975,6 @@ function CheckoutModal({ open, onClose, cart, setCart, settings, onOrderComplete
           ))}
         </div>
 
-        {/* Step 0: Customer */}
         {step === 0 && (
           <div className="space-y-4">
             <div>
@@ -950,7 +988,6 @@ function CheckoutModal({ open, onClose, cart, setCart, settings, onOrderComplete
           </div>
         )}
 
-        {/* Step 1: Delivery */}
         {step === 1 && (
           <div className="space-y-4">
             <div>
@@ -981,7 +1018,6 @@ function CheckoutModal({ open, onClose, cart, setCart, settings, onOrderComplete
           </div>
         )}
 
-        {/* Step 2: Payment */}
         {step === 2 && (
           <div className="space-y-4">
             <div>
@@ -1018,7 +1054,6 @@ function CheckoutModal({ open, onClose, cart, setCart, settings, onOrderComplete
           </div>
         )}
 
-        {/* Step 3: Review */}
         {step === 3 && (
           <div className="space-y-4">
             <div className="p-4 rounded-xl bg-ink-card border border-ink-border space-y-2 text-sm">
@@ -1044,7 +1079,6 @@ function CheckoutModal({ open, onClose, cart, setCart, settings, onOrderComplete
           </div>
         )}
 
-        {/* Navigation */}
         <div className="flex gap-3 mt-6 pb-2">
           {step > 0 && (
             <button onClick={() => setStep(s => s - 1)} className="btn-outline-gold rounded-xl px-5 py-3 text-sm flex items-center gap-1">
@@ -1089,26 +1123,34 @@ function AdminPanel({ open, onClose, onDataChange }) {
   const [filterStatus, setFilterStatus] = useState('all');
   const [selectedCat, setSelectedCat] = useState('');
 
-  // Load products for all categories
-    useEffect(() => {
-    if (open && authed) {
-      // مزامنة فورية للوحة الإدارة
-      db.ref('categories').on('value', s => setCategories(s.val() || DEFAULT_CATEGORIES));
-      db.ref('products').on('value', s => setProducts(s.val() || {}));
-      db.ref('orders').on('value', s => setOrders(s.val() || []));
-      db.ref('settings').on('value', s => setSettings(s.val() || DEFAULT_SETTINGS));
-      db.ref('hero').on('value', s => setHero(s.val() || DEFAULT_HERO));
+  // Load products for all categories from Firebase with cleanup
+  useEffect(() => {
+    if (!db) return;
+    let categoriesRef, productsRef, ordersRef, settingsRef, heroRef;
 
-      // هادا هو الكود الجديد باش نحبسو الاتصال كي نغلقو اللوحة (Cleanup)
-      return () => {
-        db.ref('categories').off();
-        db.ref('products').off();
-        db.ref('orders').off();
-        db.ref('settings').off();
-        db.ref('hero').off();
-      };
+    if (open && authed) {
+      categoriesRef = db.ref('categories');
+      productsRef = db.ref('products');
+      ordersRef = db.ref('orders');
+      settingsRef = db.ref('settings');
+      heroRef = db.ref('hero');
+
+      categoriesRef.on('value', s => setCategories(s.val() || DEFAULT_CATEGORIES));
+      productsRef.on('value', s => setProducts(s.val() || {}));
+      ordersRef.on('value', s => setOrders(s.val() || []));
+      settingsRef.on('value', s => setSettings(s.val() || DEFAULT_SETTINGS));
+      heroRef.on('value', s => setHero(s.val() || DEFAULT_HERO));
     }
+
+    return () => {
+      if (categoriesRef) categoriesRef.off();
+      if (productsRef) productsRef.off();
+      if (ordersRef) ordersRef.off();
+      if (settingsRef) settingsRef.off();
+      if (heroRef) heroRef.off();
+    };
   }, [open, authed]);
+
   useEffect(() => {
     if (!open) {
       setAuthed(false);
@@ -1139,13 +1181,23 @@ function AdminPanel({ open, onClose, onDataChange }) {
     setSaving(false);
     if (result.success) {
       toast('تم الحفظ بنجاح', 'success');
-      onDataChange && onDataChange();
+      if (onDataChange) onDataChange();
       return true;
     } else {
       toast(result.message || 'فشل الحفظ', 'error');
       return false;
     }
   };
+
+  // Load products function (used in admin)
+  const loadProducts = useCallback(() => {
+    if (db) {
+      db.ref('products').once('value', (s) => {
+        const data = s.val() || {};
+        setProducts(data);
+      });
+    }
+  }, []);
 
   /* --- Categories --- */
   const addCategory = async () => {
@@ -1191,7 +1243,6 @@ function AdminPanel({ open, onClose, onDataChange }) {
     }
     const catId = prod.categoryId;
     let prods = [...(products[catId] || [])];
-    // Remove from old category if moved
     if (editingProduct && editingProduct._origCat && editingProduct._origCat !== catId) {
       const oldProds = (products[editingProduct._origCat] || []).filter(p => p.id !== prod.id);
       await Storage.saveProducts(editingProduct._origCat, oldProds);
@@ -1211,7 +1262,10 @@ function AdminPanel({ open, onClose, onDataChange }) {
     if (!confirm('حذف هذا المنتج؟')) return;
     const prods = (products[prod.categoryId] || []).filter(p => p.id !== prod.id);
     const ok = await saveWithFeedback(null, null, () => Storage.saveProducts(prod.categoryId, prods));
-    if (ok) loadProducts();
+    if (ok) {
+      setProducts(prev => ({ ...prev, [prod.categoryId]: prods }));
+      loadProducts();
+    }
   };
 
   const handleImageUpload = async (e, prod, setProd) => {
@@ -1232,7 +1286,7 @@ function AdminPanel({ open, onClose, onDataChange }) {
       setProd({ ...prod, images: [...current, ...compressed] });
       toast('تم رفع الصور', 'success');
     } catch (err) {
-      toast('فشل رفع الصور', 'error');
+      toast('فشل رفع الصور: ' + (err.message || 'خطأ غير معروف'), 'error');
     }
   };
 
@@ -1268,17 +1322,19 @@ function AdminPanel({ open, onClose, onDataChange }) {
       const updated = { ...settings, logo: data };
       const ok = await saveWithFeedback('settings', updated);
       if (ok) setSettings(updated);
-    } catch { toast('فشل رفع الشعار', 'error'); }
+    } catch (err) {
+      toast('فشل رفع الشعار: ' + (err.message || 'خطأ غير معروف'), 'error');
+    }
   };
 
-  // Filtered orders
   const filteredOrders = filterStatus === 'all' ? orders : orders.filter(o => o.status === filterStatus);
 
-  // All products flat for listing
   const allProductsList = useMemo(() => {
     let list = [];
     Object.entries(products).forEach(([catId, prods]) => {
-      prods.forEach(p => list.push({ ...p, categoryId: catId }));
+      if (Array.isArray(prods)) {
+        prods.forEach(p => list.push({ ...p, categoryId: catId }));
+      }
     });
     if (selectedCat) list = list.filter(p => p.categoryId === selectedCat);
     return list;
@@ -1347,7 +1403,6 @@ function AdminPanel({ open, onClose, onDataChange }) {
               وسم كـ "الأكثر مبيعاً"
             </label>
           </div>
-          {/* Images */}
           <div>
             <label className="text-sm text-gray-300 mb-2 block">الصور (حتى 4) — انقر لاختيار الصورة الرئيسية</label>
             <div className="flex flex-wrap gap-2 mb-2">
@@ -1390,7 +1445,6 @@ function AdminPanel({ open, onClose, onDataChange }) {
 
   return (
     <Modal open={open} onClose={onClose} title="لوحة الإدارة — Adrimtex" wide>
-      {/* Tabs */}
       <div className="flex gap-1 px-4 pt-3 pb-2 overflow-x-auto border-b border-ink-border shrink-0">
         {tabs.map(t => (
           <button key={t.id} onClick={() => setTab(t.id)} className={`admin-tab flex items-center gap-1.5 ${tab === t.id ? 'active' : 'text-gray-400'}`}>
@@ -1401,7 +1455,6 @@ function AdminPanel({ open, onClose, onDataChange }) {
       </div>
 
       <div className="p-5">
-        {/* PRODUCTS TAB */}
         {tab === 'products' && (
           <div>
             <div className="flex flex-wrap gap-2 mb-4 items-center">
@@ -1437,7 +1490,6 @@ function AdminPanel({ open, onClose, onDataChange }) {
           </div>
         )}
 
-        {/* CATEGORIES TAB */}
         {tab === 'categories' && (
           <div>
             <div className="flex gap-2 mb-4">
@@ -1453,8 +1505,8 @@ function AdminPanel({ open, onClose, onDataChange }) {
                     <input
                       autoFocus
                       defaultValue={c.name}
-                      onKeyDown={e => { if (e.key === 'Enter') renameCategory(c.id, e.target.value); if (e.key === 'Escape') setEditingCat(null); }}
-                      onBlur={e => renameCategory(c.id, e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') renameCategory(c.id, e.currentTarget.value); if (e.key === 'Escape') setEditingCat(null); }}
+                      onBlur={e => renameCategory(c.id, e.currentTarget.value)}
                       className="flex-1"
                     />
                   ) : (
@@ -1471,7 +1523,6 @@ function AdminPanel({ open, onClose, onDataChange }) {
           </div>
         )}
 
-        {/* ORDERS TAB */}
         {tab === 'orders' && (
           <div>
             <div className="flex gap-2 mb-4 overflow-x-auto pb-1">
@@ -1516,7 +1567,6 @@ function AdminPanel({ open, onClose, onDataChange }) {
           </div>
         )}
 
-        {/* HERO TAB */}
         {tab === 'hero' && (
           <div className="space-y-4">
             <div>
@@ -1563,10 +1613,8 @@ function AdminPanel({ open, onClose, onDataChange }) {
           </div>
         )}
 
-        {/* SETTINGS TAB */}
         {tab === 'settings' && (
           <div className="space-y-6">
-            {/* Logo */}
             <div>
               <h4 className="font-cairo font-bold text-gold mb-3">شعار المتجر</h4>
               <div className="flex items-center gap-4">
@@ -1587,7 +1635,6 @@ function AdminPanel({ open, onClose, onDataChange }) {
               </div>
             </div>
 
-            {/* CCP */}
             <div>
               <h4 className="font-cairo font-bold text-gold mb-3">حساب CCP</h4>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1602,14 +1649,12 @@ function AdminPanel({ open, onClose, onDataChange }) {
               </div>
             </div>
 
-            {/* WhatsApp */}
             <div>
               <h4 className="font-cairo font-bold text-gold mb-3">رقم واتساب المتجر</h4>
               <input value={settings.whatsappNumber || ''} onChange={e => setSettings({ ...settings, whatsappNumber: e.target.value })} dir="ltr" className="text-left font-mono" placeholder="213555123456" />
               <p className="text-xs text-gray-500 mt-1">بالصيغة الدولية بدون + (مثال: 213555123456)</p>
             </div>
 
-            {/* Discount codes */}
             <div>
               <h4 className="font-cairo font-bold text-gold mb-3">أكواد الخصم</h4>
               <div className="space-y-2 mb-3">
@@ -1643,7 +1688,6 @@ function AdminPanel({ open, onClose, onDataChange }) {
               <Icon name="save" size={16} /> {saving ? 'جاري الحفظ...' : 'حفظ الإعدادات'}
             </button>
 
-            {/* PIN change */}
             <div className="border-t border-ink-border pt-6">
               <h4 className="font-cairo font-bold text-gold mb-3">تغيير الرمز السري</h4>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
@@ -1685,25 +1729,45 @@ function App() {
   const [showSearch, setShowSearch] = useState(false);
   const toast = useToast();
 
- const loadData = useCallback(() => {
-    db.ref('categories').on('value', s => setCategories(s.val() || DEFAULT_CATEGORIES));
-    db.ref('settings').on('value', s => setSettings(s.val() || DEFAULT_SETTINGS));
-    db.ref('hero').on('value', s => setHero(s.val() || DEFAULT_HERO));
-    db.ref('products').on('value', s => {
+  // Load data from Firebase with cleanup
+  useEffect(() => {
+    if (!db) return;
+    let categoriesRef, settingsRef, heroRef, productsRef;
+
+    const handleCategories = (s) => setCategories(s.val() || DEFAULT_CATEGORIES);
+    const handleSettings = (s) => setSettings(s.val() || DEFAULT_SETTINGS);
+    const handleHero = (s) => setHero(s.val() || DEFAULT_HERO);
+    const handleProducts = (s) => {
       const data = s.val() || {};
       let all = [];
       Object.values(data).forEach(arr => { if(Array.isArray(arr)) all = all.concat(arr); });
       setAllProducts(all);
-    });
+    };
+
+    categoriesRef = db.ref('categories');
+    settingsRef = db.ref('settings');
+    heroRef = db.ref('hero');
+    productsRef = db.ref('products');
+
+    categoriesRef.on('value', handleCategories);
+    settingsRef.on('value', handleSettings);
+    heroRef.on('value', handleHero);
+    productsRef.on('value', handleProducts);
+
+    return () => {
+      categoriesRef.off('value', handleCategories);
+      settingsRef.off('value', handleSettings);
+      heroRef.off('value', handleHero);
+      productsRef.off('value', handleProducts);
+    };
   }, []);
 
   useEffect(() => {
     (async () => {
       await Storage.init();
-      loadData();
       setReady(true);
     })();
-  }, [loadData]);
+  }, []);
 
   const filtered = useMemo(() => {
     let list = allProducts;
@@ -1733,11 +1797,10 @@ function App() {
   const cartCount = cart.reduce((s, i) => s + i.qty, 0);
   const waNumber = settings.whatsappNumber || hero.social?.whatsapp || '213555123456';
 
-  // YouTube embed helper
   const getVideoEmbed = (url) => {
     if (!url) return null;
     if (url.includes('youtube.com/embed')) return url;
-    const ytMatch = url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/))([a-zA-Z0-9_-]{11})/);
+    const ytMatch = url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/|v\/))([a-zA-Z0-9_-]{11})/);
     if (ytMatch) return `https://www.youtube.com/embed/${ytMatch[1]}`;
     return url;
   };
@@ -1758,7 +1821,6 @@ function App() {
 
   return (
     <div className="min-h-screen bg-ink pb-safe">
-      {/* ═══ HEADER ═══ */}
       <header className="sticky top-0 z-50 bg-ink/95 backdrop-blur-md border-b border-ink-border pt-safe">
         <div className="max-w-8xl mx-auto px-4 h-14 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
@@ -1777,7 +1839,6 @@ function App() {
             </div>
           </div>
 
-          {/* Desktop search */}
           <div className="hidden md:flex flex-1 max-w-md mx-4">
             <div className="relative w-full">
               <input value={search} onChange={e => setSearch(e.target.value)} placeholder="ابحث عن منتج..." className="!pr-10" />
@@ -1799,14 +1860,12 @@ function App() {
           </div>
         </div>
 
-        {/* Mobile search */}
         {showSearch && (
           <div className="px-4 pb-3 md:hidden">
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="ابحث عن منتج..." autoFocus />
           </div>
         )}
 
-        {/* Mobile menu */}
         {menuOpen && (
           <div className="lg:hidden border-t border-ink-border bg-ink-soft px-4 py-3 space-y-1">
             <button onClick={() => { setActiveCat('all'); setMenuOpen(false); }} className={`block w-full text-right px-3 py-2 rounded-lg text-sm ${activeCat === 'all' ? 'bg-gold/10 text-gold' : 'text-gray-300'}`}>الكل</button>
@@ -1817,11 +1876,9 @@ function App() {
         )}
       </header>
 
-      {/* ═══ HERO ═══ */}
       {activeCat === 'all' && !search && (
         <section className="hero-glow relative overflow-hidden">
           <div className="max-w-8xl mx-auto px-4 py-12 md:py-20 text-center">
-            {/* Logo large */}
             <div className="mb-6 flex justify-center">
               {settings.logo ? (
                 <img src={settings.logo} alt="Adrimtex" className="h-24 md:h-32 w-auto object-contain drop-shadow-2xl" />
@@ -1838,14 +1895,12 @@ function App() {
             <p className="text-gray-300 text-base md:text-lg max-w-2xl mx-auto mb-3 leading-relaxed">{hero.subtitle}</p>
             <p className="text-gray-500 text-sm md:text-base max-w-xl mx-auto mb-8 leading-relaxed">{hero.description}</p>
 
-            {/* Video */}
             {hero.videoUrl && getVideoEmbed(hero.videoUrl) && (
               <div className="max-w-2xl mx-auto mb-8 rounded-2xl overflow-hidden border border-ink-border aspect-video">
                 <iframe src={getVideoEmbed(hero.videoUrl)} className="w-full h-full" allowFullScreen allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" title="فيديو تعريفي" />
               </div>
             )}
 
-            {/* Social + Phones */}
             <div className="flex flex-wrap items-center justify-center gap-3 mb-6">
               {hero.social?.facebook && (
                 <a href={hero.social.facebook} target="_blank" rel="noopener noreferrer" className="w-10 h-10 rounded-full bg-ink-card border border-ink-border flex items-center justify-center hover:border-gold hover:text-gold transition-colors">
@@ -1883,7 +1938,6 @@ function App() {
         </section>
       )}
 
-      {/* ═══ CATEGORIES BAR ═══ */}
       <div className="sticky top-14 z-40 bg-ink/90 backdrop-blur-md border-b border-ink-border">
         <div className="max-w-8xl mx-auto px-4 py-2.5 flex gap-2 overflow-x-auto">
           <button onClick={() => setActiveCat('all')}
@@ -1900,7 +1954,6 @@ function App() {
       </div>
 
       <main className="max-w-8xl mx-auto px-4 py-6">
-        {/* Best sellers */}
         {activeCat === 'all' && !search && bestSellers.length > 0 && (
           <section className="mb-10">
             <div className="flex items-center gap-2 mb-4">
@@ -1915,7 +1968,6 @@ function App() {
           </section>
         )}
 
-        {/* Products */}
         <section>
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-cairo text-xl font-bold">
@@ -1941,7 +1993,6 @@ function App() {
         </section>
       </main>
 
-      {/* ═══ FOOTER ═══ */}
       <footer className="border-t border-ink-border mt-12 pb-safe">
         <div className="max-w-8xl mx-auto px-4 py-8 text-center">
           <div className="flex items-center justify-center gap-2 mb-3">
@@ -1966,7 +2017,6 @@ function App() {
         </div>
       </footer>
 
-      {/* Floating cart button (mobile) */}
       {cartCount > 0 && (
         <button onClick={() => setShowCart(true)}
           className="fixed bottom-6 left-6 z-50 btn-gold rounded-full w-14 h-14 flex items-center justify-center shadow-lg shadow-gold/30 pulse-gold md:hidden"
@@ -1976,7 +2026,6 @@ function App() {
         </button>
       )}
 
-      {/* Modals */}
       {selectedProduct && (
         <ProductDetail
           product={selectedProduct}
@@ -2000,13 +2049,13 @@ function App() {
         cart={cart}
         setCart={setCart}
         settings={settings}
-        onOrderComplete={loadData}
+        onOrderComplete={() => {}}
       />
 
       <AdminPanel
         open={showAdmin}
         onClose={() => setShowAdmin(false)}
-        onDataChange={loadData}
+        onDataChange={() => {}}
       />
     </div>
   );
@@ -2026,4 +2075,3 @@ root.render(<Root />);
 </script>
 </body>
 </html>
-```
